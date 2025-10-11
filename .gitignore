@@ -1,4 +1,18 @@
-# Python 
-venv/ 
-__pycache__/ 
-*.pyc 
+# Python Virtual Environment & Cache
+venv/
+__pycache__/
+*.pyc
+
+# IDE specific folders
+.vscode/
+.idea/
+
+# macOS specific files
+.DS_Store
+
+# Project Data - Do not track these in Git
+backend/data/images/
+backend/data/product_vectors.json
+
+
+
