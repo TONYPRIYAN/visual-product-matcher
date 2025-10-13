@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import axios from 'axios';
-import './App.css'; // Import our new CSS file
+import './App.css'; // Import our new stylish CSS file
 
 // --- Type Definitions for our data structures ---
 interface Product {
@@ -15,6 +15,33 @@ interface SearchResult {
   similarity: number;
 }
 
+// --- Placeholder Component for Initial State ---
+const ResultsPlaceholder = () => (
+  <div className="placeholder-container">
+    <div>
+      <h2 style={{ fontSize: '1.5rem', fontWeight: 600, marginBottom: '0.5rem' }}>Your results will appear here</h2>
+      <p>Upload an image and click search to begin.</p>
+    </div>
+  </div>
+);
+
+// --- Product Modal (Pop-up) Component ---
+const ProductModal = ({ product, onClose }: { product: Product; onClose: () => void }) => {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        <button className="modal-close-button" onClick={onClose}>&times;</button>
+        <img src={`http://127.0.0.1:8000/${product.image_path}`} alt={product.name} className="modal-image" />
+        <div className="modal-details">
+          <h2>{product.name}</h2>
+          <p>{product.category}</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
 // --- Main Application Component ---
 function App() {
   // --- State Management ---
@@ -23,6 +50,8 @@ function App() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hasSearched, setHasSearched] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null); // State for the pop-up
 
   // --- Handlers ---
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -32,6 +61,7 @@ function App() {
       setPreviewUrl(URL.createObjectURL(file));
       setResults([]);
       setError(null);
+      setHasSearched(false);
     }
   };
 
@@ -44,6 +74,7 @@ function App() {
     setIsLoading(true);
     setError(null);
     setResults([]);
+    setHasSearched(true);
 
     const formData = new FormData();
     formData.append('file', selectedFile);
@@ -75,6 +106,7 @@ function App() {
         setPreviewUrl(URL.createObjectURL(file));
         setResults([]);
         setError(null);
+        setHasSearched(false);
       } else {
         setError("Please drop an image file (e.g., jpg, png).");
       }
@@ -83,73 +115,86 @@ function App() {
 
   // --- UI Rendering ---
   return (
-    <div className="container">
-      <header className="header">
-        <h1>Visual Product Matcher</h1>
-        <p>Upload an image to find visually similar products from our database.</p>
-      </header>
+    <>
+      <div className="background-wrapper"></div>
+      <div className="container">
+        <header className="header">
+          <h1 className="title-gradient">Visual Product Matcher</h1>
+          <p>Upload an image to find visually similar products from our database.</p>
+        </header>
 
-      <main className="main-grid">
-        <div className="left-column">
-          <div className="uploader-box">
-            <h2>1. Upload Your Image</h2>
-            <div
-              className="drop-zone"
-              onDragOver={handleDragOver}
-              onDrop={handleDrop}
-              onClick={() => document.getElementById('fileInput')?.click()}
-            >
-              <input
-                type="file"
-                id="fileInput"
-                onChange={handleFileChange}
-                accept="image/*"
-                style={{ display: 'none' }}
-              />
-              <p>Drag & drop an image here, or click to select a file.</p>
-            </div>
-            {previewUrl && (
-              <div className="image-preview">
-                <h3>Your Image:</h3>
-                <img src={previewUrl} alt="Selected preview" />
+        <main className="main-grid">
+          <div className="left-column">
+            <div className="uploader-box">
+              <h2>1. Upload Your Image</h2>
+              <div
+                className="drop-zone"
+                onDragOver={handleDragOver}
+                onDrop={handleDrop}
+                onClick={() => document.getElementById('fileInput')?.click()}
+              >
+                <input
+                  type="file"
+                  id="fileInput"
+                  onChange={handleFileChange}
+                  accept="image/*"
+                  style={{ display: 'none' }}
+                />
+                <p>Drag & drop an image here, or click to select a file.</p>
               </div>
-            )}
-            <button
-              onClick={handleSearch}
-              disabled={isLoading || !selectedFile}
-              className="search-button"
-            >
-              {isLoading ? 'Searching...' : '2. Find Similar Products'}
-            </button>
-          </div>
-        </div>
-
-        <div className="right-column">
-          {isLoading && (
-            <div className="loader-container">
-              <div className="loader"></div>
+              {previewUrl && (
+                <div className="image-preview">
+                  <h3>Your Image:</h3>
+                  <img src={previewUrl} alt="Selected preview" />
+                </div>
+              )}
+              <button
+                onClick={handleSearch}
+                disabled={isLoading || !selectedFile}
+                className="search-button"
+              >
+                {isLoading ? 'Searching...' : '2. Find Similar Products'}
+              </button>
             </div>
-          )}
-          {error && <div className="error-message">{error}</div>}
-          {results.length > 0 && (
-            <div className="results-grid">
-              {results.map((result, index) => (
-                <div key={result.product.id} className="result-card">
-                  <img src={`http://127.0.0.1:8000/${result.product.image_path}`} alt={result.product.name} />
-                  <div className="card-content">
-                    <h3>{index === 0 ? "Your Upload (Best Match)" : result.product.name}</h3>
-                    <p className="category">{result.product.category}</p>
-                    <div className="similarity-badge">
-                      Similarity: {(result.similarity * 100).toFixed(1)}%
+          </div>
+
+          <div className="right-column">
+            {isLoading && <div className="loader-container"><div className="loader"></div></div>}
+            {error && <div className="error-message">{error}</div>}
+            
+            {!isLoading && !error && !hasSearched && <ResultsPlaceholder />}
+            
+            {!isLoading && !error && hasSearched && results.length > 0 && (
+              <div className="results-grid">
+                {results.map((result, index) => (
+                  <div 
+                    key={result.product.id} 
+                    className="result-card" 
+                    style={{ animationDelay: `${index * 100}ms` }}
+                    onClick={() => setSelectedProduct(result.product)} // <-- This makes the card clickable
+                  >
+                    <img src={`http://127.0.0.1:8000/${result.product.image_path}`} alt={result.product.name} />
+                    <div className="card-content">
+                      <h3>{index === 0 ? "Your Upload (Best Match)" : result.product.name}</h3>
+                      <p className="category">{result.product.category}</p>
+                      <div className="similarity-badge">
+                        Similarity: {(result.similarity * 100).toFixed(1)}%
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </main>
-    </div>
+                ))}
+              </div>
+            )}
+            {!isLoading && !error && hasSearched && results.length === 0 && <ResultsPlaceholder />}
+          </div>
+        </main>
+      </div>
+
+      {/* --- Render the Modal Pop-up --- */}
+      {selectedProduct && (
+        <ProductModal product={selectedProduct} onClose={() => setSelectedProduct(null)} />
+      )}
+    </>
   );
 }
 
