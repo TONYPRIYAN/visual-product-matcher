@@ -1,106 +1,117 @@
 import json
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.staticfiles import StaticFiles # <-- 1. IMPORT THIS
+import requests
 from PIL import Image
 from transformers import CLIPProcessor, CLIPModel
 import torch
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from typing import List
+from contextlib import asynccontextmanager
 from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 import io
+from fastapi.middleware.cors import CORSMiddleware
 
-# --- Configuration ---
+GITHUB_USERNAME = "TONYPRIYAN"
+BASE_URL = f"https://raw.githubusercontent.com/{GITHUB_USERNAME}/product-matcher-data/main/"
+VECTORS_URL = f"{BASE_URL}data/product_vectors.json"
+METADATA_URL = f"{BASE_URL}data/metadata.json"
+
 MODEL_NAME = "openai/clip-vit-base-patch32"
-VECTORS_FILE = "data/product_vectors.json"
-METADATA_FILE = "data/metadata.json"
+model_data = {}
 
-# --- Application State ---
-app_state = {}
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("Server starting up...")
+    print(f"Loading CLIP model: '{MODEL_NAME}'...")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model_data['model'] = CLIPModel.from_pretrained(MODEL_NAME).to(device)
+    model_data['processor'] = CLIPProcessor.from_pretrained(MODEL_NAME)
+    model_data['device'] = device
+    print(f"Model loaded successfully on device: {device}")
 
-# --- FastAPI App Initialization ---
-app = FastAPI()
+    print(f"Loading product vectors from '{VECTORS_URL}'...")
+    response = requests.get(VECTORS_URL)
+    response.raise_for_status()
+    product_data = response.json()
+    model_data['product_vectors'] = {item['id']: item['vector'] for item in product_data}
+    print(f"Loaded {len(model_data['product_vectors'])} product vectors.")
 
-# --- CORS Middleware ---
+    print(f"Loading product metadata from '{METADATA_URL}'...")
+    response = requests.get(METADATA_URL)
+    response.raise_for_status()
+    metadata = response.json()
+    model_data['product_metadata'] = {item['id']: item for item in metadata}
+    print(f"Loaded metadata for {len(model_data['product_metadata'])} products.")
+    
+    print("Startup complete. Server is ready to accept requests.")
+    yield
+    print("Server shutting down...")
+    model_data.clear()
+
+app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- Mount Static Files Directory ---
-# 2. THIS NEW LINE FIXES THE BROKEN IMAGES.
-# It tells FastAPI to serve any file in the 'data' folder.
 app.mount("/data", StaticFiles(directory="data"), name="data")
 
-# --- Lifespan Events (Startup) ---
-@app.on_event("startup")
-async def startup_event():
-    print("Server starting up...")
-    
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Loading CLIP model: '{MODEL_NAME}' on device: {device}")
-    app_state["model"] = CLIPModel.from_pretrained(MODEL_NAME).to(device)
-    app_state["processor"] = CLIPProcessor.from_pretrained(MODEL_NAME)
-    app_state["device"] = device
-    
-    print(f"Loading product vectors from '{VECTORS_FILE}'...")
-    with open(VECTORS_FILE, 'r') as f:
-        product_data = json.load(f)
-    app_state["product_vectors"] = {item['id']: item['vector'] for item in product_data}
-    print(f"Loaded {len(app_state['product_vectors'])} product vectors.")
-    
-    print(f"Loading product metadata from '{METADATA_FILE}'...")
-    with open(METADATA_FILE, 'r') as f:
-        metadata = json.load(f)
-    app_state["product_metadata"] = {item['id']: item for item in metadata}
-    print(f"Loaded metadata for {len(app_state['product_metadata'])} products.")
-    
-    print("Startup complete. Server is ready to accept requests.")
+class Product(BaseModel):
+    id: str
+    name: str
+    category: str
+    image_path: str
 
-# --- Helper Functions ---
+class Result(BaseModel):
+    product: Product
+    similarity: float
+
+class SearchResponse(BaseModel):
+    results: List[Result]
+
 def get_image_embedding(image: Image.Image):
-    model = app_state["model"]
-    processor = app_state["processor"]
-    device = app_state["device"]
-    
-    # Ensure image is RGB before processing
     image = image.convert("RGB")
-
-    inputs = processor(images=image, return_tensors="pt", padding=True)
-    inputs = {k: v.to(device) for k, v in inputs.items()}
-    
+    inputs = model_data['processor'](images=image, return_tensors="pt", padding=True)
+    inputs = {k: v.to(model_data['device']) for k, v in inputs.items()}
     with torch.no_grad():
-        embedding = model.get_image_features(**inputs).cpu().numpy()
-    return embedding
+        embedding = model_data['model'].get_image_features(pixel_values=inputs['pixel_values'])
+    return embedding.cpu().numpy().flatten()
 
-# --- API Endpoint ---
-@app.post("/find-similar-products/")
+@app.post("/find-similar-products/", response_model=SearchResponse)
 async def find_similar_products(file: UploadFile = File(...)):
     try:
         contents = await file.read()
         query_image = Image.open(io.BytesIO(contents))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid image file.")
-
+    
     query_vector = get_image_embedding(query_image)
     
-    product_vectors = app_state["product_vectors"]
-    product_ids = list(product_vectors.keys())
-    db_vectors = [product_vectors[pid] for pid in product_ids]
+    product_ids = list(model_data['product_vectors'].keys())
+    db_vectors = np.array(list(model_data['product_vectors'].values()))
     
-    similarities = cosine_similarity(query_vector, db_vectors)[0]
+    similarities = cosine_similarity([query_vector], db_vectors)[0]
     
-    results = sorted(zip(product_ids, similarities), key=lambda x: x[1], reverse=True)
+    top_indices = np.argsort(similarities)[-10:][::-1]
     
-    top_results = []
-    for product_id, sim in results[:10]:
-        product_info = app_state["product_metadata"].get(product_id)
+    results = []
+    for i in top_indices:
+        product_id = product_ids[i]
+        product_info = model_data['product_metadata'].get(product_id)
         if product_info:
-            top_results.append({
-                "product": product_info,
-                "similarity": float(sim)
-            })
+            results.append(Result(
+                product=Product(**product_info),
+                similarity=similarities[i]
+            ))
+            
+    return SearchResponse(results=results)
 
-    return {"results": top_results}
+@app.get("/")
+def read_root():
+    return {"message": "Visual Product Matcher API is running."}
 
