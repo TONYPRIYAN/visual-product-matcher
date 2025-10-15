@@ -11,8 +11,8 @@ __pycache__/
 .DS_Store
 
 # Project Data - Do not track these in Git
-backend/data/images/
-backend/data/product_vectors.json
+# backend/data/images/
+# backend/data/product_vectors.json
 
 
 
